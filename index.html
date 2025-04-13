@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaborative Whiteboard</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .draggable {
+            cursor: move;
+            user-select: none;
+        }
+        .whiteboard {
+            background: repeating-linear-gradient(
+                45deg,
+                #f0f0f0,
+                #f0f0f0 10px,
+                #f8f8f8 10px,
+                #f8f8f8 20px
+            );
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <!-- Session Controls -->
+        <div class="mb-6 flex flex-wrap gap-4 justify-between items-center">
+            <div class="flex gap-4">
+                <button id="newSession" class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600">
+                    New Session
+                </button>
+                <div class="flex gap-2">
+                    <input type="text" id="sessionInput" placeholder="Enter Session ID" 
+                           class="border rounded-lg px-4 py-2">
+                    <button id="joinSession" class="bg-green-500 text-white px-6 py-2 rounded-lg hover:bg-green-600">
+                        Join
+                    </button>
+                </div>
+            </div>
+            <div id="sessionInfo" class="hidden">
+                <span class="text-gray-600">Session ID: </span>
+                <span id="currentSession" class="font-mono bg-gray-200 px-2 py-1 rounded"></span>
+                <button id="copySession" class="ml-2 text-blue-500 hover:text-blue-700">
+                    <i class="bi bi-clipboard"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Tools -->
+        <div class="mb-4 flex gap-4">
+            <button id="textTool" class="bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600">
+                <i class="bi bi-type"></i> Add Text
+            </button>
+            <label class="bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 cursor-pointer">
+                <i class="bi bi-image"></i> Add Image
+                <input type="file" id="imageInput" class="hidden" accept="image/*">
+            </label>
+        </div>
+
+        <!-- Whiteboard -->
+        <div id="whiteboard" class="whiteboard w-full h-[70vh] border rounded-lg shadow-lg overflow-hidden relative">
+            <div id="elements" class="absolute inset-0"></div>
+        </div>
+    </div>
+
+    <script>
+        // Simulated socket connection (replace with actual socket.io implementation)
+        const socket = {
+            emit: (event, data) => console.log('Socket emit:', event, data),
+            on: (event, callback) => console.log('Socket listening to:', event)
+        };
+
+        let sessionId = null;
+        const elements = new Map();
+        let isDragging = false;
+        let currentElement = null;
+        let offset = { x: 0, y: 0 };
+
+        // Session management
+        document.getElementById('newSession').addEventListener('click', () => {
+            sessionId = Math.random().toString(36).substr(2, 9);
+            document.getElementById('currentSession').textContent = sessionId;
+            document.getElementById('sessionInfo').classList.remove('hidden');
+            socket.emit('create-session', sessionId);
+        });
+
+        document.getElementById('joinSession').addEventListener('click', () => {
+            const input = document.getElementById('sessionInput');
+            sessionId = input.value;
+            document.getElementById('currentSession').textContent = sessionId;
+            document.getElementById('sessionInfo').classList.remove('hidden');
+            socket.emit('join-session', sessionId);
+        });
+
+        document.getElementById('copySession').addEventListener('click', () => {
+            navigator.clipboard.writeText(sessionId);
+        });
+
+        // Text tool
+        document.getElementById('textTool').addEventListener('click', () => {
+            const whiteboard = document.getElementById('whiteboard');
+            whiteboard.addEventListener('click', addTextElement, { once: true });
+        });
+
+        function addTextElement(e) {
+            const rect = e.target.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            const element = document.createElement('div');
+            element.className = 'draggable absolute bg-white p-2 rounded shadow-lg';
+            element.style.left = `${x}px`;
+            element.style.top = `${y}px`;
+
+            const textArea = document.createElement('textarea');
+            textArea.className = 'border-none resize-none focus:outline-none';
+            textArea.placeholder = 'Enter text here';
+            element.appendChild(textArea);
+
+            document.getElementById('elements').appendChild(element);
+            setupDraggable(element);
+            
+            socket.emit('add-element', {
+                type: 'text',
+                position: { x, y },
+                content: ''
+            });
+        }
+
+        // Image tool
+        document.getElementById('imageInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const img = document.createElement('img');
+                    img.src = event.target.result;
+                    img.className = 'draggable absolute w-48 h-auto';
+                    img.style.left = '50px';
+                    img.style.top = '50px';
+                    
+                    document.getElementById('elements').appendChild(img);
+                    setupDraggable(img);
+
+                    socket.emit('add-element', {
+                        type: 'image',
+                        position: { x: 50, y: 50 },
+                        content: event.target.result
+                    });
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Dragging functionality
+        function setupDraggable(element) {
+            element.addEventListener('mousedown', startDragging);
+            document.addEventListener('mousemove', drag);
+            document.addEventListener('mouseup', stopDragging);
+        }
+
+        function startDragging(e) {
+            isDragging = true;
+            currentElement = e.target;
+            const rect = currentElement.getBoundingClientRect();
+            offset = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
+
+        function drag(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            
+            const whiteboard = document.getElementById('whiteboard');
+            const rect = whiteboard.getBoundingClientRect();
+            
+            const x = e.clientX - rect.left - offset.x;
+            const y = e.clientY - rect.top - offset.y;
+            
+            currentElement.style.left = `${x}px`;
+            currentElement.style.top = `${y}px`;
+        }
+
+        function stopDragging() {
+            isDragging = false;
+            currentElement = null;
+        }
+    </script>
+<script>document.body.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); return }, { passive: false })</script>
+	</body>
+</html>
